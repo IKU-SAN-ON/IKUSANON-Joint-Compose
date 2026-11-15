@@ -6,12 +6,13 @@
 # not run side by side).
 #
 # Required environment (put in .env.prod and pass --env-file, or export):
-#   GHCR_OWNER      Lowercase GitHub user/org that owns the packages
-#                   (default: iku-san-on)
-#   WEB_IMAGE_TAG   Tag produced by apps/web's Publish container images workflow
-#                   (for example v0.0.1-alpha; MUST also match the migration image)
-#   BOT_IMAGE_TAG   Tag produced by apps/bot's Publish container image workflow
-#   DATABASE_URL    PostgreSQL connection string
+#   GHCR_OWNER            Lowercase GitHub user/org that owns the packages
+#                         (default: iku-san-on)
+#   WEB_IMAGE_TAG         Tag produced by apps/web's Publish container images workflow
+#                         (for example v0.0.1-alpha; MUST also match the migration image)
+#   BOT_IMAGE_TAG         Tag produced by apps/bot's Publish container image workflow
+#   EXTRACTOR_IMAGE_TAG   Tag produced by apps/extractor's Publish container image workflow
+#   DATABASE_URL          PostgreSQL connection string
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
 #   DISCORD_TOKEN / PARSER_SEGA_ID / PARSER_SEGA_PW / BOT_OWNER
 #   WEB_URL_BASE / WEB_API_URL_BASE
@@ -87,7 +88,39 @@ services:
       # so a hosted DATABASE_URL (e.g. Prisma Postgres) is reachable.
       - webdb_network_prod
       - webbot_network_prod
-    restart: 'no'
+    restart: "no"
+
+  # One-shot job: downloads the song JSON and hands it to the internal
+  # updatesongs API after web is healthy. Set SONG_SOURCE_URL in .env.prod.
+  song-sync:
+    container_name: ikusanon-boostday-form-song-sync-prod
+    image: curlimages/curl:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        curl --fail --silent --show-error --location \
+          --retry 3 --retry-delay 2 --max-time 300 \
+          --output /tmp/songs.json \
+          "$${SONG_SOURCE_URL}"
+        if ! grep -q '{' /tmp/songs.json; then
+          echo "Song source returned no song objects; refusing to sync." >&2
+          exit 1
+        fi
+        curl --fail-with-body --silent --show-error \
+          --request POST \
+          --header "Content-Type: application/json" \
+          --data-binary @/tmp/songs.json \
+          --max-time 300 \
+          "http://web:3000/api/v1/internal/updatesongs"
+    environment:
+      - SONG_SOURCE_URL=${SONG_SOURCE_URL:?SONG_SOURCE_URL must be set}
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - webbot_network_prod
+    restart: "no"
 
   postgres:
     container_name: ikusanon-boostday-form-postgres-prod
@@ -123,6 +156,7 @@ services:
       - PARSER_SEGA_PW=${PARSER_SEGA_PW:-}
       - WEB_URL_BASE=${WEB_URL_BASE:-}
       - WEB_API_URL_BASE=${WEB_API_URL_BASE:-}
+      - SONG_SOURCE_URL=${SONG_SOURCE_URL:-}
       - BOT_OWNER=${BOT_OWNER:-}
     restart: unless-stopped
     init: true
@@ -139,6 +173,21 @@ services:
       - webbot_network_prod
     depends_on:
       - web
+
+  extractor:
+    container_name: ikusanon-extractor-prod
+    image: ghcr.io/3underscoren/chunithm-score-extractor:${EXTRACTOR_IMAGE_TAG:?EXTRACTOR_IMAGE_TAG must be set}
+    pull_policy: always
+    restart: unless-stopped
+    expose:
+      - "8000"
+    networks:
+      - webbot_network_prod
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 networks:
   webdb_network_prod:
