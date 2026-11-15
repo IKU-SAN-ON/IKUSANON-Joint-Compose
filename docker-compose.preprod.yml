@@ -53,6 +53,38 @@ services:
       - webbot_network_preprod
     restart: "no"
 
+  # One-shot job: downloads the song JSON and hands it to the internal
+  # updatesongs API after web is healthy. Set SONG_SOURCE_URL in .env.preprod.
+  song-sync:
+    container_name: ikusanon-boostday-form-song-sync-preprod
+    image: curlimages/curl:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        curl --fail --silent --show-error --location \
+          --retry 3 --retry-delay 2 --max-time 300 \
+          --output /tmp/songs.json \
+          "$${SONG_SOURCE_URL}"
+        if ! grep -q '{' /tmp/songs.json; then
+          echo "Song source returned no song objects; refusing to sync." >&2
+          exit 1
+        fi
+        curl --fail-with-body --silent --show-error \
+          --request POST \
+          --header "Content-Type: application/json" \
+          --data-binary @/tmp/songs.json \
+          --max-time 300 \
+          "http://web:3000/api/v1/internal/updatesongs"
+    environment:
+      - SONG_SOURCE_URL=${SONG_SOURCE_URL:?SONG_SOURCE_URL must be set}
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - webbot_network_preprod
+    restart: "no"
+
   postgres:
     container_name: ikusanon-boostday-form-postgres-preprod
     image: postgres:15
@@ -88,6 +120,7 @@ services:
       - PARSER_SEGA_PW=${PARSER_SEGA_PW:-}
       - WEB_URL_BASE=${WEB_URL_BASE:-http://localhost:83}
       - WEB_API_URL_BASE=${WEB_API_URL_BASE:-http://web:3000/api/v1}
+      - SONG_SOURCE_URL=${SONG_SOURCE_URL:-}
       - BOT_OWNER=${BOT_OWNER:-}
     restart: unless-stopped
     init: true
@@ -109,7 +142,7 @@ services:
     expose:
       - "8000"
     networks:
-      - webbot_network_prod
+      - webbot_network_preprod
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
       interval: 10s
