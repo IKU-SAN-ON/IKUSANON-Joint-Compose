@@ -156,6 +156,7 @@ services:
       - PARSER_SEGA_PW=${PARSER_SEGA_PW:-}
       - WEB_URL_BASE=${WEB_URL_BASE:-}
       - WEB_API_URL_BASE=${WEB_API_URL_BASE:-}
+      - EXTRACTOR_API_URL_BASE=${EXTRACTOR_API_URL_BASE:-http://extractor:8000}
       - SONG_SOURCE_URL=${SONG_SOURCE_URL:-}
       - BOT_OWNER=${BOT_OWNER:-}
     restart: unless-stopped
@@ -184,7 +185,13 @@ services:
     networks:
       - webbot_network_prod
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=5).close()",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
